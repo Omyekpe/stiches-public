@@ -74,8 +74,30 @@ function LoginForm() {
 
 const emptyProduct = { name: '', price: '', description: '', category: '', featured: false }
 
+const AREAS = ['products', 'inquiries', 'orders', 'ledger', 'contact']
+
 function Dashboard() {
-  const [tab, setTab] = useState('products')
+  const [profile, setProfile] = useState(undefined) // undefined = loading, null = no access
+  const [tab, setTab] = useState(null)
+
+  useEffect(() => {
+    supabase
+      .from('admin_profiles')
+      .select('role, permissions')
+      .maybeSingle()
+      .then(({ data }) => setProfile(data ?? null))
+  }, [])
+
+  if (profile === undefined) {
+    return <p className="mx-auto max-w-6xl px-6 py-16 text-center text-cream-dim">Loading…</p>
+  }
+
+  const isRoot = profile?.role === 'root'
+  const tabs = [
+    ...AREAS.filter((a) => isRoot || profile?.permissions.includes(a)),
+    ...(isRoot ? ['admins'] : []),
+  ]
+  const current = tab && tabs.includes(tab) ? tab : tabs[0]
 
   return (
     <section className="mx-auto max-w-6xl px-6 py-12">
@@ -89,17 +111,24 @@ function Dashboard() {
         </button>
       </div>
 
+      {tabs.length === 0 && (
+        <p className="text-cream-dim">
+          Your account doesn't have access to anything yet. Ask the root admin to give you
+          access.
+        </p>
+      )}
+
       <div className="mb-8 flex gap-2 overflow-x-auto border-b border-oxblood-700">
-        {['products', 'inquiries', 'orders', 'ledger', 'contact', 'admins'].map((t) => (
+        {tabs.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`relative px-4 py-2 capitalize transition-colors duration-150 ${
-              tab === t ? 'text-thread-light' : 'text-cream-dim hover:text-cream'
+              current === t ? 'text-thread-light' : 'text-cream-dim hover:text-cream'
             }`}
           >
             {t}
-            {tab === t && (
+            {current === t && (
               <motion.span
                 layoutId="admin-tab"
                 transition={{ type: 'spring', duration: 0.3, bounce: 0.1 }}
@@ -111,17 +140,17 @@ function Dashboard() {
       </div>
 
       <motion.div
-        key={tab}
+        key={current}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.15 }}
       >
-        {tab === 'products' && <ProductsPanel />}
-        {tab === 'inquiries' && <InquiriesPanel />}
-        {tab === 'orders' && <OrdersPanel />}
-        {tab === 'ledger' && <LedgerPanel />}
-        {tab === 'contact' && <ContactPanel />}
-        {tab === 'admins' && <AdminsPanel />}
+        {current === 'products' && <ProductsPanel />}
+        {current === 'inquiries' && <InquiriesPanel />}
+        {current === 'orders' && <OrdersPanel />}
+        {current === 'ledger' && <LedgerPanel />}
+        {current === 'contact' && <ContactPanel />}
+        {current === 'admins' && <AdminsPanel />}
       </motion.div>
     </section>
   )
@@ -922,11 +951,40 @@ async function callAdmins(payload) {
   return data
 }
 
+const AREA_LABELS = {
+  products: 'Products',
+  inquiries: 'Inquiries',
+  orders: 'Orders',
+  ledger: 'Ledger',
+  contact: 'Contact',
+}
+
+function PermissionChecks({ value, onChange }) {
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-2">
+      {AREAS.map((area) => (
+        <label key={area} className="flex items-center gap-2 text-sm text-cream-dim">
+          <input
+            type="checkbox"
+            checked={value.includes(area)}
+            onChange={(e) =>
+              onChange(e.target.checked ? [...value, area] : value.filter((a) => a !== area))
+            }
+            className="accent-[#c9a227]"
+          />
+          {AREA_LABELS[area]}
+        </label>
+      ))}
+    </div>
+  )
+}
+
 function AdminsPanel() {
   const [admins, setAdmins] = useState([])
   const [loading, setLoading] = useState(true)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [newPerms, setNewPerms] = useState([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -949,14 +1007,27 @@ function AdminsPanel() {
     e.preventDefault()
     setSaving(true)
     try {
-      await callAdmins({ action: 'create', email, password })
+      await callAdmins({ action: 'create', email, password, permissions: newPerms })
       setEmail('')
       setPassword('')
+      setNewPerms([])
       await load()
     } catch (err) {
       setError(err.message)
     }
     setSaving(false)
+  }
+
+  async function setPermissions(admin, permissions) {
+    const previous = admins
+    setAdmins(admins.map((a) => (a.id === admin.id ? { ...a, permissions } : a)))
+    try {
+      await callAdmins({ action: 'setPermissions', id: admin.id, permissions })
+      setError('')
+    } catch (err) {
+      setAdmins(previous)
+      setError(err.message)
+    }
   }
 
   async function handleDelete(admin) {
@@ -973,7 +1044,8 @@ function AdminsPanel() {
     <div className="max-w-xl">
       <h2 className="font-display text-xl">Admins</h2>
       <p className="mt-1 text-sm text-cream-dim">
-        Everyone listed here can sign in and manage the whole site.
+        Only you (the root admin) can see this tab. Tick which parts of the admin page each
+        person can use. Changes save as you tick.
       </p>
 
       <form onSubmit={handleSubmit} className="card mt-4 flex flex-col gap-4 p-6">
@@ -994,6 +1066,7 @@ function AdminsPanel() {
           onChange={(e) => setPassword(e.target.value)}
           className="input"
         />
+        <PermissionChecks value={newPerms} onChange={setNewPerms} />
         <button type="submit" disabled={saving} className="btn-thread">
           {saving ? 'Adding…' : 'Add admin'}
         </button>
@@ -1007,19 +1080,34 @@ function AdminsPanel() {
       <ul className="mt-6 flex flex-col gap-2">
         {loading && <li className="text-sm text-cream-dim">Loading…</li>}
         {admins.map((a) => (
-          <li key={a.id} className="card flex items-center justify-between gap-3 p-4">
-            <span className="min-w-0 truncate">
-              {a.email}
-              {a.isMe && <span className="ml-2 text-xs text-thread-light">(you)</span>}
-            </span>
-            {!a.isMe && (
-              <button
-                onClick={() => handleDelete(a)}
-                aria-label={`Remove ${a.email}`}
-                className="text-cream-dim transition-colors duration-150 hover:text-thread"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+          <li key={a.id} className="card flex flex-col gap-3 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <span className="min-w-0 truncate">
+                {a.email}
+                {a.role === 'root' && (
+                  <span className="ml-2 text-xs text-thread-light">(root admin)</span>
+                )}
+                {a.isMe && a.role !== 'root' && (
+                  <span className="ml-2 text-xs text-thread-light">(you)</span>
+                )}
+              </span>
+              {!a.isMe && (
+                <button
+                  onClick={() => handleDelete(a)}
+                  aria-label={`Remove ${a.email}`}
+                  className="text-cream-dim transition-colors duration-150 hover:text-thread"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            {a.role === 'root' ? (
+              <p className="text-sm text-cream-dim">Full access to everything.</p>
+            ) : (
+              <PermissionChecks
+                value={a.permissions}
+                onChange={(perms) => setPermissions(a, perms)}
+              />
             )}
           </li>
         ))}

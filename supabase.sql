@@ -148,3 +148,93 @@ create policy "Authenticated can manage site settings"
 insert into site_settings (id, address, email, phone)
 values (1, '14 Ahmadu Bello Way, Lagos, Nigeria', 'hello@stitchesbyliyah.com', '+234 800 000 0000')
 on conflict (id) do nothing;
+
+-- Root admin + per-admin permissions.
+-- Each admin gets a list of areas they may use: products, inquiries, orders,
+-- ledger, contact. The root admin can use everything and is the only one who
+-- can add/remove admins or change permissions (done by the manage-admins Edge
+-- Function with the service-role key, so this table has no write policies).
+-- Signed-in users with no row here have no access at all.
+
+create table if not exists admin_profiles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  role text not null default 'admin' check (role in ('root', 'admin')),
+  permissions text[] not null default '{}',
+  created_at timestamptz default now()
+);
+
+create unique index if not exists admin_profiles_one_root on admin_profiles (role) where role = 'root';
+
+alter table admin_profiles enable row level security;
+
+drop policy if exists "Read own admin profile" on admin_profiles;
+create policy "Read own admin profile"
+  on admin_profiles for select
+  using (user_id = auth.uid());
+
+create or replace function has_perm(area text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from admin_profiles
+    where user_id = auth.uid() and (role = 'root' or area = any(permissions))
+  );
+$$;
+
+-- products (+ product photos)
+drop policy if exists "Authenticated can manage products" on products;
+create policy "Admins with products access can manage products"
+  on products for all
+  using (has_perm('products')) with check (has_perm('products'));
+
+drop policy if exists "Authenticated can upload product images" on storage.objects;
+drop policy if exists "Authenticated can update product images" on storage.objects;
+drop policy if exists "Authenticated can delete product images" on storage.objects;
+create policy "Products admins can upload product images"
+  on storage.objects for insert
+  with check (bucket_id = 'products' and has_perm('products'));
+create policy "Products admins can update product images"
+  on storage.objects for update
+  using (bucket_id = 'products' and has_perm('products'));
+create policy "Products admins can delete product images"
+  on storage.objects for delete
+  using (bucket_id = 'products' and has_perm('products'));
+
+-- inquiries (+ the spam blocklist)
+drop policy if exists "Authenticated can read inquiries" on inquiries;
+drop policy if exists "Authenticated can delete inquiries" on inquiries;
+create policy "Inquiries admins can read inquiries"
+  on inquiries for select using (has_perm('inquiries'));
+create policy "Inquiries admins can delete inquiries"
+  on inquiries for delete using (has_perm('inquiries'));
+
+drop policy if exists "Authenticated can manage blocked emails" on blocked_emails;
+create policy "Inquiries admins can manage blocked emails"
+  on blocked_emails for all
+  using (has_perm('inquiries')) with check (has_perm('inquiries'));
+
+-- orders and ledger
+drop policy if exists "Authenticated can manage orders" on orders;
+create policy "Orders admins can manage orders"
+  on orders for all
+  using (has_perm('orders')) with check (has_perm('orders'));
+
+drop policy if exists "Authenticated can manage ledger" on ledger_entries;
+create policy "Ledger admins can manage ledger"
+  on ledger_entries for all
+  using (has_perm('ledger')) with check (has_perm('ledger'));
+
+-- contact details
+drop policy if exists "Authenticated can manage site settings" on site_settings;
+create policy "Contact admins can manage site settings"
+  on site_settings for all
+  using (has_perm('contact')) with check (has_perm('contact'));
+
+-- One-time setup, run once by hand (replace the email) BEFORE the policies above
+-- take effect for you, or you will lock yourself out:
+--   insert into admin_profiles (user_id, role)
+--   select id, 'root' from auth.users where email = 'you@example.com';
