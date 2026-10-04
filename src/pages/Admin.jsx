@@ -21,6 +21,15 @@ export default function Admin() {
   return session ? <Dashboard /> : <LoginForm />
 }
 
+// Root admins must type their password on every visit: a saved session from an
+// earlier visit (no flag in this tab's sessionStorage) is signed out.
+const FRESH_LOGIN = 'fresh-login'
+
+function signOut() {
+  sessionStorage.removeItem(FRESH_LOGIN)
+  return supabase.auth.signOut()
+}
+
 function LoginForm() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -30,7 +39,11 @@ function LoginForm() {
     e.preventDefault()
     setError('')
     const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) setError(error.message)
+    if (error) {
+      setError(error.message)
+      return
+    }
+    sessionStorage.setItem(FRESH_LOGIN, '1')
   }
 
   return (
@@ -85,7 +98,13 @@ function Dashboard() {
       .from('admin_profiles')
       .select('role, permissions')
       .maybeSingle()
-      .then(({ data }) => setProfile(data ?? null))
+      .then(({ data }) => {
+        if (data?.role === 'root' && !sessionStorage.getItem(FRESH_LOGIN)) {
+          signOut()
+          return
+        }
+        setProfile(data ?? null)
+      })
   }, [])
 
   if (profile === undefined) {
@@ -104,7 +123,7 @@ function Dashboard() {
       <div className="mb-8 flex items-center justify-between">
         <h1 className="font-display text-3xl">Admin <span className="text-thread-light italic">desk</span></h1>
         <button
-          onClick={() => supabase.auth.signOut()}
+          onClick={signOut}
           className="flex items-center gap-2 text-sm text-cream-dim transition-colors duration-150 hover:text-thread"
         >
           <LogOut className="h-4 w-4" /> Sign out
@@ -985,6 +1004,7 @@ function AdminsPanel() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [newPerms, setNewPerms] = useState([])
+  const [newIsRoot, setNewIsRoot] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -1007,10 +1027,17 @@ function AdminsPanel() {
     e.preventDefault()
     setSaving(true)
     try {
-      await callAdmins({ action: 'create', email, password, permissions: newPerms })
+      await callAdmins({
+        action: 'create',
+        email,
+        password,
+        permissions: newPerms,
+        role: newIsRoot ? 'root' : 'admin',
+      })
       setEmail('')
       setPassword('')
       setNewPerms([])
+      setNewIsRoot(false)
       await load()
     } catch (err) {
       setError(err.message)
@@ -1030,6 +1057,20 @@ function AdminsPanel() {
     }
   }
 
+  async function setRole(admin, role) {
+    const message =
+      role === 'root'
+        ? `Make ${admin.email} a root admin? They will have full access and can add or remove other admins, including you.`
+        : `Make ${admin.email} a regular admin? They will lose root access.`
+    if (!window.confirm(message)) return
+    try {
+      await callAdmins({ action: 'setRole', id: admin.id, role })
+      await load()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   async function handleDelete(admin) {
     if (!window.confirm(`Remove ${admin.email}? They will no longer be able to sign in.`)) return
     try {
@@ -1044,7 +1085,7 @@ function AdminsPanel() {
     <div className="max-w-xl">
       <h2 className="font-display text-xl">Admins</h2>
       <p className="mt-1 text-sm text-cream-dim">
-        Only you (the root admin) can see this tab. Tick which parts of the admin page each
+        Only root admins can see this tab. Tick which parts of the admin page each
         person can use. Changes save as you tick.
       </p>
 
@@ -1066,7 +1107,16 @@ function AdminsPanel() {
           onChange={(e) => setPassword(e.target.value)}
           className="input"
         />
-        <PermissionChecks value={newPerms} onChange={setNewPerms} />
+        <label className="flex items-center gap-2 text-sm text-cream-dim">
+          <input
+            type="checkbox"
+            checked={newIsRoot}
+            onChange={(e) => setNewIsRoot(e.target.checked)}
+            className="accent-[#c9a227]"
+          />
+          Make root admin (full access, can manage other admins)
+        </label>
+        {!newIsRoot && <PermissionChecks value={newPerms} onChange={setNewPerms} />}
         <button type="submit" disabled={saving} className="btn-thread">
           {saving ? 'Adding…' : 'Add admin'}
         </button>
@@ -1092,13 +1142,21 @@ function AdminsPanel() {
                 )}
               </span>
               {!a.isMe && (
-                <button
-                  onClick={() => handleDelete(a)}
-                  aria-label={`Remove ${a.email}`}
-                  className="text-cream-dim transition-colors duration-150 hover:text-thread"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                <div className="flex shrink-0 items-center gap-4">
+                  <button
+                    onClick={() => setRole(a, a.role === 'root' ? 'admin' : 'root')}
+                    className="text-xs text-cream-dim transition-colors duration-150 hover:text-thread"
+                  >
+                    {a.role === 'root' ? 'Make regular admin' : 'Make root'}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(a)}
+                    aria-label={`Remove ${a.email}`}
+                    className="text-cream-dim transition-colors duration-150 hover:text-thread"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               )}
             </div>
             {a.role === 'root' ? (

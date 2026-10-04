@@ -72,10 +72,11 @@ Deno.serve(async (req) => {
       email_confirm: true,
     })
     if (error) return json({ error: error.message }, 400)
+    const makeRoot = body.role === 'root'
     const { error: profileError } = await admin.from('admin_profiles').insert({
       user_id: data.user.id,
-      role: 'admin',
-      permissions: cleanAreas(body.permissions),
+      role: makeRoot ? 'root' : 'admin',
+      permissions: makeRoot ? AREAS : cleanAreas(body.permissions),
     })
     if (profileError) {
       await admin.auth.admin.deleteUser(data.user.id) // don't leave an account with no profile
@@ -95,6 +96,24 @@ Deno.serve(async (req) => {
     const { error } = await admin
       .from('admin_profiles')
       .upsert({ user_id: id, role: 'admin', permissions: cleanAreas(body.permissions) })
+    if (error) return json({ error: error.message }, 400)
+    return json({ ok: true })
+  }
+
+  if (body.action === 'setRole') {
+    const id = String(body.id)
+    if (id === me.id) return json({ error: "You can't change your own role" }, 400)
+    if (body.role !== 'root' && body.role !== 'admin') return json({ error: 'Unknown role' }, 400)
+    const { data: target } = await admin
+      .from('admin_profiles')
+      .select('permissions')
+      .eq('user_id', id)
+      .maybeSingle()
+    const { error } = await admin.from('admin_profiles').upsert({
+      user_id: id,
+      role: body.role,
+      permissions: body.role === 'root' ? AREAS : (target?.permissions ?? []),
+    })
     if (error) return json({ error: error.message }, 400)
     return json({ ok: true })
   }

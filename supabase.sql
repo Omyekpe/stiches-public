@@ -163,7 +163,7 @@ create table if not exists admin_profiles (
   created_at timestamptz default now()
 );
 
-create unique index if not exists admin_profiles_one_root on admin_profiles (role) where role = 'root';
+-- (several root admins are allowed)
 
 alter table admin_profiles enable row level security;
 
