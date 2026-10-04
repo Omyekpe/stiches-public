@@ -7,7 +7,7 @@ export default function Logo({ className = '' }) {
       aria-hidden
       viewBox="0 0 76 48"
       fill="none"
-      className={`logo ${className}`}
+      className={`logo overflow-visible ${className}`}
       strokeLinecap="round"
       strokeLinejoin="round"
     >
